@@ -1,0 +1,39 @@
+{% extends 'blog_app/base.html' %}
+
+{% block title %}
+    {% if is_editing %}Edit Post{% else %}Create New Post{% endif %} - {{ block.super }}
+{% endblock %}
+
+{% block content %}
+    {# The h2 tag uses 'post.title' which is available when is_editing is True #}
+    <h2>{% if is_editing %}Edit Post: {{ post.title }}{% else %}Create New Post{% endif %}</h2>
+    
+    {# Messages are rendered in base.html via the messages framework #}
+
+    <form method="post">
+        {% csrf_token %}
+        
+        {{ form.non_field_errors }} {# Display any non-field errors from the form #}
+
+        {% for field in form %}
+            <div class="form-group" style="margin-bottom: 15px;">
+                {{ field.label_tag }}<br>
+                {{ field }}
+                {% if field.help_text %}
+                    <small style="color: grey; display: block;">{{ field.help_text }}</small>
+                {% endif %}
+                {% for error in field.errors %}
+                    <p style="color: red; font-size: 0.9em;">{{ error }}</p>
+                {% endfor %}
+            </div>
+        {% endfor %}
+        
+        <button type="submit" style="padding: 10px 15px; background-color: #5cb85c; color: white; border: none; border-radius: 4px; cursor: pointer;">
+            {% if is_editing %}Update Post{% else %}Create Post{% endif %}
+        </button>
+        {% if is_editing %}
+            {# Ensure 'post.author.username' and 'post.slug' are available in context #}
+            <a href="{% url 'blog_app:post_detail' username=post.author.username slug=post.slug %}" style="margin-left: 10px; color: #337ab7; text-decoration: none;">Cancel</a>
+        {% endif %}
+    </form>
+{% endblock %}

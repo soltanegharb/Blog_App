@@ -1,0 +1,38 @@
+{% comment %} {% if messages %}
+<ul class="messages">
+  {% for message in messages %}
+  <li {% if message.tags %} class="{{ message.tags }}" {% endif %}>{{ message }}</li>
+  {% endfor %}
+</ul>
+{% endif %} {% endcomment %}
+
+<h3>Leave a Comment</h3>
+
+<form method="post" action="{% url 'blog_app:add_comment' slug=post.slug %}">
+  {% csrf_token %}
+
+  {{ form.non_field_errors }}
+
+  <div>
+    {{ form.content.label_tag }}<br>
+    {{ form.content }}
+    {% if form.content.errors %}
+    <div class="error">{{ form.content.errors }}</div>
+    {% endif %}
+  </div>
+
+  <button type="submit">Post Comment</button>
+</form>
+
+<hr>
+
+<h3>Comments</h3>
+{% for comment in post.comments.all %}
+<div style="margin-bottom: 1rem;">
+  <strong>{{ comment.user.username }}</strong>
+  <small>on {{ comment.created_at|date:"M d, Y H:i" }}</small>
+  <p>{{ comment.content }}</p>
+</div>
+{% empty %}
+<p>No comments yet. Be the first to comment!</p>
+{% endfor %}

@@ -1,0 +1,12 @@
+{% extends 'blog_app/base.html' %}
+
+{% block content %}
+    {% for message in messages %}
+        {{ messages }}
+    {% endfor %}
+    <form method="post">
+        {% csrf_token %}
+        {{ form.as_p }}
+        <button type="submit">Create post</button>
+    </form>
+{% endblock %}

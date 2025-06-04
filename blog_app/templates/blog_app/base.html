@@ -1,0 +1,60 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Blog App{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'css/style.css' %}">
+</head>
+
+<body>
+    <header>
+        <span class="site-title" style="float: left; margin-left: 20px; font-size: 1.5em; line-height: 1.5em;">
+            <a href="{% url 'blog_app:post_list' %}" style="color: #fff; text-decoration: none;">Medium simplified</a>
+        </span>
+        <nav>
+            <a href="{% url 'blog_app:search_results' %}">Search</a>
+            {% if user.is_authenticated %}
+                <a href="{% url 'blog_app:create_post' %}">Write</a>
+                <a href="{% url 'blog_app:user_profile' username=user.username %}">Profile</a>
+                <form action="{% url 'blog_app:logout' %}" method="post" style="display: inline;">
+                    {% csrf_token %}
+                    <button type="submit">Logout</button> 
+                </form>
+            {% else %}
+            <a href="{% url 'blog_app:login' %}">Login</a>
+            <a href="{% url 'blog_app:signup' %}">Sign Up</a>
+            {% endif %}
+        </nav>
+    </header>
+
+    {% if messages %}
+    <div class="messages-container" style="max-width: 960px; margin: 15px auto 0 auto;">
+        <ul class="messages">
+            {% for message in messages %}
+            <li class="{{ message.tags }}">{{ message }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <main>
+        {% block content %}
+        {% endblock %}
+    </main>
+
+    <footer>
+        <div>
+            <a href="{% url 'blog_app:contact_view' %}">
+                <h4 style="margin-top: 10%;">Contact us</h4>
+            </a>
+        </div>
+    </footer>
+
+    {% block extra_js %}
+    {% endblock %}
+</body>
+
+</html>

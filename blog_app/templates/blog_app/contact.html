@@ -1,0 +1,12 @@
+{% extends "blog_app/base.html" %} {% block title %}
+Contact Us - {{ block.super
+}}{% endblock %} {% block content %}
+{% for message in messages %}
+{{message}}
+{% endfor %}
+<h2>Contact Us</h2>
+<form method="post">
+  {% csrf_token %} {{ form.as_p }}
+  <button type="submit">Send Message</button>
+</form>
+{% endblock %}

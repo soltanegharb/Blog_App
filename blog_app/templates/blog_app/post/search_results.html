@@ -1,0 +1,47 @@
+{% extends "blog_app/base.html" %}
+
+{% block content %}
+<h1>Search Posts</h1>
+
+<form method="get" action="{% url 'blog_app:search_results' %}">
+    {{ search_form.q.label_tag }}
+    {{ search_form.q }}
+    <button type="submit">Search</button>
+</form>
+
+{% if query %}
+<h2>Results for "{{ query }}":</h2>
+
+{% if page_obj.object_list %}
+<ul>
+    {% for post in page_obj %}
+    <li>
+        <h3>
+            {% if username != '' %}
+                <a href="{% url 'blog_app:post_detail' username=post.author.username slug=post.slug %}">{{ post.title }}</a>
+            {% else %}
+                <a href="{% url 'blog_app:signup' %}">{{ post.title }}</a>
+            {% endif %}
+        </h3>
+        <p>{{ post.content|truncatewords:30 }}</p>
+    </li>
+    {% endfor %}
+</ul>
+
+<div class="pagination">
+    {% if page_obj.has_previous %}
+    <a href="?q={{ query }}&page={{ page_obj.previous_page_number }}">Previous</a>
+    {% endif %}
+
+    <span>Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span>
+
+    {% if page_obj.has_next %}
+    <a href="?q={{ query }}&page={{ page_obj.next_page_number }}">Next</a>
+    {% endif %}
+</div>
+
+{% else %}
+<p>No results found.</p>
+{% endif %}
+{% endif %}
+{% endblock %}
