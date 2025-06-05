@@ -7,6 +7,7 @@ from django.contrib import messages
 from blog_app.forms.user import UserRegistration
 from django.contrib.auth.decorators import login_required
 from django.conf import settings
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 
 
 def user_register(request):
@@ -21,8 +22,10 @@ def user_register(request):
             pw_confirm = form.cleaned_data['password_confirm']
 
             if pw != pw_confirm:
-                messages.error(request, 'Passwords are not same!')
-                return redirect('blog_app:signup')
+                messages.error(request, 'Passwords do not match!')
+                return render(request, 'registration/signup.html', {'form': form})
+
+
             user = form.save(commit=False)
             user.set_password(form.cleaned_data['password']) 
             user.save()
@@ -31,8 +34,6 @@ def user_register(request):
             return redirect('blog_app:post_list')
         else:
             messages.error(request, "Please correct the errors below.")
-            return render(request, 'registration/signup.html', {'form': form})
-
     else:
         form = UserRegistration()
 
@@ -44,34 +45,27 @@ def custom_user_login(request):
         messages.info(request, "You are already logged in.")
         return redirect('blog_app:post_list')
 
+    message_to_display = None
     if request.method == 'POST':
         form = CustomLoginForm(request.POST)            
         if form.is_valid():
             username = form.cleaned_data.get('username')
             password = form.cleaned_data.get('password')
-            user = authenticate(
-            request=request,
-            username=username,
-            password=password
-            )
+            user = authenticate(request=request, username=username, password=password)
             if user is not None:
                 login(request, user)
                 next_url = request.GET.get('next')
-                if next_url:
-                    return redirect(next_url)
-                else:
-                    return redirect(resolve_url(settings.LOGIN_REDIRECT_URL))
+                return redirect(next_url or resolve_url(settings.LOGIN_REDIRECT_URL))
             else:
-                message = 'wrong data!'
+                message_to_display = 'Invalid username or password.'
+                messages.error(request, message_to_display)
         else:
-            message = 'wrong form!'
-            
-        context = {'form': form, 'message': message}   
-        return render(request, 'blog_app/user/custom_login.html', context=context)
+            message_to_display = 'Form data is invalid. Please check your input.'
+            messages.error(request, message_to_display)
+    else:
+        form = CustomLoginForm()
     
-    form = CustomLoginForm()
-    context = {'form': form}
-    
+    context = {'form': form } 
     return render(request, 'blog_app/user/custom_login.html', context=context) 
 
 
@@ -81,19 +75,26 @@ def user_logout(request):
         messages.success(request, "You have been successfully logged out.")
     else:
         messages.info(request, "You are not currently logged in.")
-    
     return redirect('blog_app:post_list')
 
 
 def user_profile(request, username):
     profile_user = get_object_or_404(CustomUser, username=username)
-    user_posts = Post.objects.filter(
-        author=profile_user,
-        ).order_by('-created_at')
+    
+    user_posts_qs = Post.detailed.user_posts_with_details(user=profile_user)
+
+    paginator = Paginator(user_posts_qs, per_page=5)
+    page_number = request.GET.get('page')
+    try:
+        user_posts_page_obj = paginator.page(page_number)
+    except PageNotAnInteger:
+        user_posts_page_obj = paginator.page(1)
+    except EmptyPage:
+        user_posts_page_obj = paginator.page(paginator.num_pages)
 
     context = {
-    'profile_user': profile_user,
-    'user_posts': user_posts,
+        'profile_user': profile_user,
+        'user_posts': user_posts_page_obj,
     }
     return render(request, 'blog_app/user/user_profile.html', context)
 
@@ -103,22 +104,17 @@ def edit_profile(request, username):
     user_to_edit = get_object_or_404(CustomUser, username=username)
 
     if not (request.user == user_to_edit or request.user.is_staff):
-        messages.error(request, "sorry! you don't have permission for this!!!")
-        if hasattr(request.user, 'id'):
-             return redirect('blog_app:user_profile', request.user.username)
-        return redirect('blog_app:post_list')
+        messages.error(request, "Sorry! You don't have permission for this.")
+        return redirect('blog_app:user_profile', username=request.user.username if request.user.is_authenticated else user_to_edit.username)
 
     if request.method == 'POST':
         form = UserProfile(request.POST, request.FILES, instance=user_to_edit)
         if form.is_valid():
-            form.save()
-            new_username = form.cleaned_data['username']
+            updated_user = form.save()
             messages.success(request, 'Your profile updated successfully!')
-            return redirect('blog_app:user_profile', username=new_username)
+            return redirect('blog_app:user_profile', username=updated_user.username) 
         else:
-            error_list = []
-            for field, errors in form.errors.items():
-                error_list.append(f"{field.capitalize()}: {', '.join(errors)}")
+            error_list = [f"{field.label if field.label else field.name.capitalize()}: {', '.join(errors)}" for field, errors in form.errors.items()]
             messages.error(request, f"Please fix errors: {'; '.join(error_list)}")
     else:
         form = UserProfile(instance=user_to_edit)

@@ -17,7 +17,6 @@ def create_post(request):
     user = request.user
     if request.method == "POST":
         form = PostForm(request.POST)
-
         if form.is_valid():
             post = form.save(commit=False)
             post.author = user
@@ -44,8 +43,13 @@ def create_post(request):
             {'form': form, 'is_editing': False}
         )
 
+@login_required
 def edit_post(request, username, slug):
-    post = get_object_or_404(Post, author__username=username, slug=slug)
+    post = get_object_or_404(
+        Post.detailed,
+        author__username=username,
+        slug=slug
+    )
     user = request.user
 
     if not (user == post.author or user.is_staff):
@@ -54,31 +58,36 @@ def edit_post(request, username, slug):
 
     if request.method == 'POST':
         form = PostForm(request.POST, instance=post)
-        
         if form.is_valid():
-            post = form.save()
-            user_tags = form.cleaned_data['tags_input']
+            updated_post = form.save(commit=False)
+            user_tags = form.cleaned_data.get('tags_input', '')
             clean_tags_list = clean_tags(user_tags)
-            post.tags.set(clean_tags_list)
-            return redirect(reverse('blog_app:post_detail', args=[post.author.username, post.slug]))
+            updated_post.tags.set(clean_tags_list)
+            updated_post.save()
+            form.save_m2m()
+            
+            messages.success(request, f"Post '{updated_post.title}' updated successfully.")
+            return redirect(reverse('blog_app:post_detail', args=[updated_post.author.username, updated_post.slug]))
         else:
+            messages.error(request, "Please correct the errors below.")
             return render(
                 request,
                 'blog_app/post/edit.html',
-                {'form': form, 'post':post, 'is_editing': True}
+                {'form': form, 'post': post, 'is_editing': True}
             )
     else:
         initial_tags = ", ".join([tag.name for tag in post.tags.all()])
         form = PostForm(instance=post, initial={'tags_input': initial_tags})
         return render(
-                request,
-                'blog_app/post/edit.html',
-                {'form': form, 'post':post, 'is_editing': True}
-            )
+            request,
+            'blog_app/post/edit.html',
+            {'form': form, 'post': post, 'is_editing': True}
+        )
         
 def post_list(request):
-    all_posts_list = Post.objects.filter(status='published').order_by('-created_at')
-    paginator = Paginator(all_posts_list, per_page=2)
+    all_posts_list = Post.detailed.published_posts_with_details()
+    
+    paginator = Paginator(all_posts_list, per_page=5)
 
     page_number = request.GET.get('page')
     try:
@@ -89,14 +98,13 @@ def post_list(request):
         posts_page_obj = paginator.page(paginator.num_pages)
 
     context = {'posts': posts_page_obj, 'page_obj': posts_page_obj}
-    
     return render(request, 'blog_app/post/list.html', context)
 
 
 @csrf_exempt
 @login_required
 def like_post(request, username, slug):
-    post = get_object_or_404(Post, slug=slug, status='published')
+    post = get_object_or_404(Post, slug=slug, author__username=username, status=Post.STATUS_PUBLISHED)
     user = request.user
     like_instance, created = Like.objects.get_or_create(post=post, user=user)
 
@@ -105,23 +113,25 @@ def like_post(request, username, slug):
         liked = False
     else:
         liked = True
-
-    return JsonResponse({'liked': liked, 'like_count': post.likes.count()})
+    like_count = post.likes.count()
+    return JsonResponse({'liked': liked, 'like_count': like_count})
 
 
 def post_detail(request, username, slug):
-    post = get_object_or_404(Post, author__username=username, slug=slug)
+    try:
+        post = Post.detailed.get_post_by_slug_with_details(slug=slug, author_username=username)
+    except Post.DoesNotExist:
+        return get_object_or_404(Post, author__username=username, slug=slug)
 
     if not request.user.is_authenticated:
         messages.error(request, "You need to be logged in to view this post.")
         login_url = reverse('blog_app:login')
         return redirect(f'{login_url}?next={request.path}')
 
-    if post.status == 'drafted' and not (request.user == post.author or request.user.is_staff):
+    if post.status == Post.STATUS_DRAFTED and not (request.user == post.author or request.user.is_staff):
         messages.error(request, "You do not have permission to view this draft.")
         return redirect('blog_app:user_profile', username=request.user.username)
-    
-    comments = post.comments.all().order_by('created_at')
+
     comment_form = CommentForm()
     recently_viewed_posts_slugs = request.session.get('recently_viewed', [])
     
@@ -129,38 +139,34 @@ def post_detail(request, username, slug):
         recently_viewed_posts_slugs.insert(0, post.slug)
         request.session['recently_viewed'] = recently_viewed_posts_slugs[:5] 
 
-    recent_posts_objects = Post.objects.filter(
-        slug__in=request.session.get('recently_viewed', []), 
-        status='published'
-    ).order_by('-created_at') 
+    recent_posts_objects = Post.detailed.published_posts_with_details().filter(
+        slug__in=request.session.get('recently_viewed', [])
+    ).exclude(pk=post.pk)
 
     context = {
         'post': post,
-        'comments': comments,
         'comment_form': comment_form,
         'recently_viewed_posts': recent_posts_objects,
         'username': username
     }
-    return render(
-        request,
-        'blog_app/post/detail.html',
-        context=context
-    )
+    return render(request, 'blog_app/post/detail.html', context=context)
 
 
 def search_results(request):
     search_form = SearchForm(request.GET)
     query = request.GET.get('q')
-    posts = Post.objects.none()
+    posts_qs = Post.objects.none()
 
     if query:
-        posts = Post.objects.filter(
-        (Q(title__contains=query) | Q(content__contains=query)) & Q(status="published"))
+        posts_qs = Post.objects.filter(
+            (Q(title__icontains=query) | Q(content__icontains=query) | Q(tags__name__icontains=query)) & 
+            Q(status=Post.STATUS_PUBLISHED)
+        ).select_related('author').prefetch_related('tags').distinct().order_by('-created_at')
         
-        if not posts.exists():
+        if not posts_qs.exists():
             messages.info(request, f"No posts found for '{query}'.")
 
-    paginator = Paginator(posts, 5)
+    paginator = Paginator(posts_qs, 5)
     page_number = request.GET.get('page')
 
     try:
@@ -172,8 +178,7 @@ def search_results(request):
         'search_form': search_form,
         'query': query,
         'page_obj': page_obj,
-        'posts':posts,
-        'username': request.user.username
+        'username': request.user.username if request.user.is_authenticated else ''
     }
     return render(request, 'blog_app/post/search_results.html', context)
 
@@ -181,7 +186,7 @@ def search_results(request):
 @login_required
 @permission_required('blog_app.create_comment', raise_exception=True)
 def add_comment(request, slug):
-    post = get_object_or_404(Post, slug=slug, status='published')
+    post = get_object_or_404(Post.objects.select_related('author'), slug=slug, status=Post.STATUS_PUBLISHED)
 
     if request.method == 'POST':
         form = CommentForm(request.POST)
@@ -198,9 +203,5 @@ def add_comment(request, slug):
                 label = field.capitalize() if field != '__all__' else 'Form'
                 error_summary.append(f"{label}: {', '.join(errors)}")
             messages.error(request, f"Error! Please retry: {'; '.join(error_summary)}")
-    else:
-        form = CommentForm()
-
+     
     return redirect('blog_app:post_detail', username=post.author.username, slug=post.slug)
-
-
