@@ -6,16 +6,15 @@ def contact_view(request):
     if request.method == 'POST':
         form = ContactUsForm(request.POST)
         if form.is_valid():
-            print(f"contact contents:\n{form.cleaned_data}")
+            form.save()           
             messages.success(request, 'Your message successfully sent. Thank you!')
             return redirect('blog_app:contact_view')
         else:
-            messages.error(request, 'There\'s error in your form please check it.')
+            messages.error(request, 'There was an error in your form. Please check it.')
     else:
         form = ContactUsForm()
 
     context = {
         'form': form,
-        'page_title': "contact_us"
     }
     return render(request, 'blog_app/contact.html', context)
