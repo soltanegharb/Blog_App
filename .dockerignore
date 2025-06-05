@@ -1,0 +1,39 @@
+# Git
+.git
+.gitignore
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Python virtual environment
+.venv
+venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# IDE / Editor specific
+.idea/
+.vscode/
+
+# Local SQLite database (if you ever used one for testing)
+*.sqlite3
+db.sqlite3
+
+# Log files
+*.log
+logs/
+
+# Local development files
+*.swp
+*.swo
