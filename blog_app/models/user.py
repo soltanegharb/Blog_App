@@ -18,13 +18,15 @@ class CustomUser(TimeStampModel, AbstractUser):
     )
 
     def get_full_name(self):
-        return f"{self.first_name} {self.last_name}"
+        if self.first_name or self.last_name:
+            return f"{self.first_name} {self.last_name}"
     
     def get_short_name(self):
         return self.first_name
     
     def __str__(self):
-        return self.get_full_name()
+        full_name = self.get_full_name()
+        return full_name if full_name else self.username 
     
     class Meta:
         permissions = [

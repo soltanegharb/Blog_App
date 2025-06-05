@@ -1,37 +1,308 @@
-from django.contrib import admin
-from blog_app.admin import BaseAdmin
-from blog_app.models import Post
-from blog_app.models import Like
-from blog_app.models import Comment
+from django.contrib import admin, messages
+from django.urls import path, reverse, NoReverseMatch
+from django.utils.html import format_html
+from django.shortcuts import get_object_or_404, redirect
+from django.middleware.csrf import get_token
+
+from blog_app.admin.base_admin import BaseAdmin
+from blog_app.models import Post, Like, Comment
 from taggit.models import TaggedItem
- 
- 
+
+
+class CommentInline(admin.TabularInline):
+    model = Comment
+    fields = ('user', 'content', 'created_at', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at')
+    extra = 1
+    ordering = ('-created_at',)
+
+
 @admin.register(Post)
 class PostAdmin(BaseAdmin):
-   list_display = ('title', 'author', 'status', 'created_at')
-   search_fields = ('title', 'content', 'author__username')
-   list_filter = ('status', 'tags', 'author')
+    list_display = ('title', 'author', 'status', 'created_at', 'updated_at', 'word_count', 'like_count', 'comment_count', 'current_admin_like_status')
+    list_filter = ('status', 'author', 'created_at', 'tags')
+    search_fields = ('title', 'content', 'author__username', 'tags__name')
+    prepopulated_fields = {'slug': ('title',)}
+    
+    date_hierarchy = 'created_at'
+    ordering = ('-created_at',)
+    readonly_fields_base = ['created_at', 'updated_at', 'like_count', 'comment_count', 'word_count'] 
+
+    fieldsets = (
+        (None, {
+            'fields': ('title', 'slug', 'author', 'content')
+        }),
+        ('Status and Categorization', {
+            'fields': ('status', 'tags')
+        }),
+        ('Timestamps and Stats', {
+            'fields': (
+                'created_at', 
+                'updated_at', 
+                'like_count',
+                'comment_count',
+                'word_count',
+                'admin_like_button'
+            ),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    inlines = [CommentInline]
+
+    def word_count(self, obj):
+        return len(obj.content.split())
+    word_count.short_description = 'Word Count'
+
+    def like_count(self, obj):
+        if obj.pk: return obj.likes.count()
+        return 0
+    like_count.short_description = 'Likes'
+
+    def comment_count(self, obj):
+        if obj.pk: return obj.comments.count()
+        return 0
+    comment_count.short_description = 'Comments'
+
+    def current_admin_like_status(self, obj):
+        request_user = getattr(self, 'request_user', getattr(self, 'current_user', None))
+        if request_user and request_user.is_authenticated:
+            if Like.objects.filter(post=obj, user=request_user).exists():
+                return "Liked by You"
+        return "Not Liked by You"
+    current_admin_like_status.short_description = 'Your Like Status'
+
+    def admin_like_button(self, obj):
+        if not obj.pk:
+            return "-"
+        
+        admin_user = getattr(self, 'request_user', None)
+        csrf_token = getattr(self, 'csrf_token_value', '')
+
+        if not admin_user or not admin_user.is_authenticated:
+             return "User context unavailable for like button"
+        if not csrf_token:
+            return "CSRF token unavailable for like button (should be set in render_change_form)"
+
+        is_liked_by_admin = Like.objects.filter(post=obj, user=admin_user).exists()
+        button_text = "Unlike this Post" if is_liked_by_admin else "Like this Post"
+        
+        admin_site_name = self.admin_site.name
+        app_label = self.model._meta.app_label
+        model_name = self.model._meta.model_name
+        
+        url_name_component = f'{app_label}_{model_name}_toggle_like'
+        fully_qualified_view_name = f'{admin_site_name}:{url_name_component}'
+        
+        print(f"DEBUG admin_like_button: Trying to reverse: '{fully_qualified_view_name}' with args: [{obj.pk}]")
+        
+        try:
+            action_url = reverse(fully_qualified_view_name, args=[obj.pk])
+        except NoReverseMatch as e:
+            print(f"ERROR admin_like_button: NoReverseMatch for '{fully_qualified_view_name}'. Exception: {e}")
+            return format_html("<strong style='color:red;'>Error reversing URL '{}': {}</strong>", fully_qualified_view_name, str(e))
+
+
+        button_id = f"toggle-like-button-{obj.pk}"
+        html_button = format_html(
+            '<button type="button" id="{}" data-action-url="{}" data-csrf-token="{}" class="button">{}</button>',
+            button_id, action_url, csrf_token, button_text
+        )
+        js_script = format_html(
+            '''<script>
+            (function() {{
+                var button = document.getElementById("{button_id}");
+                if (button && !button.getAttribute('listener-attached')) {{
+                    button.setAttribute('listener-attached', 'true');
+                    button.addEventListener('click', function(e) {{
+                        e.preventDefault();
+                        var form = document.createElement('form');
+                        form.method = 'POST';
+                        form.action = this.getAttribute('data-action-url');
+                        var csrfInput = document.createElement('input');
+                        csrfInput.type = 'hidden';
+                        csrfInput.name = 'csrfmiddlewaretoken';
+                        csrfInput.value = this.getAttribute('data-csrf-token');
+                        form.appendChild(csrfInput);
+                        document.body.appendChild(form);
+                        form.submit();
+                        document.body.removeChild(form);
+                    }});
+                }}
+            }})();
+            </script>''',
+            button_id=button_id
+        )
+        return html_button + js_script
+    admin_like_button.short_description = 'Admin Like/Unlike'
+
+    def get_urls(self):
+        urls = super().get_urls()
+        opts = self.model._meta
+        url_pattern_name = f'{opts.app_label}_{opts.model_name}_toggle_like'
+        
+        print(f"DEBUG get_urls: Defining URL pattern with name: '{url_pattern_name}' for app '{opts.app_label}', model '{opts.model_name}'")
+
+        custom_urls = [
+            path(
+                '<path:object_id>/toggle-like/',
+                self.admin_site.admin_view(self.process_toggle_like),
+                name=url_pattern_name 
+            ),
+        ]
+        return custom_urls + urls
+
+    def process_toggle_like(self, request, object_id):
+        print(f"--- DEBUG: process_toggle_like CALLED ---")
+        print(f"DEBUG: Request method: {request.method}, Object ID: {object_id}, Admin user: {request.user.username}")
+
+        if request.method != 'POST':
+            messages.error(request, "This action requires a POST request.")
+            change_url_name = f'admin:{self.model._meta.app_label}_{self.model._meta.model_name}_change'
+            redirect_fallback_url = reverse(change_url_name, args=[object_id])
+            referer_url = request.META.get('HTTP_REFERER', redirect_fallback_url)
+            return redirect(referer_url)
+
+        post = get_object_or_404(Post, pk=object_id)
+        admin_user = request.user
+        
+        try:
+            like_instance, created = Like.objects.get_or_create(post=post, user=admin_user)
+            if not created:
+                like_instance.delete()
+                messages.success(request, f"You (admin) have UNLIKED the post: '{post.title}'.")
+            else:
+                messages.success(request, f"You (admin) have LIKED the post: '{post.title}'.")
+        except Exception as e:
+            messages.error(request, f"An error occurred during like/unlike: {e}")
+        
+        change_url_name = f'admin:{self.model._meta.app_label}_{self.model._meta.model_name}_change'
+        redirect_url = reverse(change_url_name, args=[post.pk])
+        return redirect(redirect_url)
+
+    def render_change_form(self, request, context, add=False, change=False, form_url='', obj=None):
+        self.request_user = request.user
+        self.csrf_token_value = get_token(request)
+        return super().render_change_form(request, context, add, change, form_url, obj)
+
+    def get_readonly_fields(self, request, obj=None):
+        self.request_user = request.user
+        
+        ro_fields = list(self.readonly_fields_base) 
+
+        if obj and obj.pk:
+            if 'admin_like_button' not in ro_fields:
+                ro_fields.append('admin_like_button')
+        else:
+            if 'admin_like_button' in ro_fields:
+                ro_fields.remove('admin_like_button')
+                
+        return tuple(ro_fields)
+
+
+    def changelist_view(self, request, extra_context=None):
+        self.current_user = request.user
+        self.request_user = request.user
+        return super().changelist_view(request, extra_context)
+            
+    actions = ['publish_posts', 'archive_posts', 'draft_posts', 'admin_like_posts_bulk', 'admin_unlike_posts_bulk']
+
+    def publish_posts(self, request, queryset):
+        updated_count = queryset.update(status='published')
+        self.message_user(request, f"{updated_count} post(s) have been published.", messages.SUCCESS)
+    publish_posts.short_description = "Mark selected posts as Published"
+
+    def archive_posts(self, request, queryset):
+        updated_count = queryset.update(status='archived')
+        self.message_user(request, f"{updated_count} post(s) have been archived.", messages.SUCCESS)
+    archive_posts.short_description = "Mark selected posts as Archived"
+
+    def draft_posts(self, request, queryset):
+        updated_count = queryset.update(status='drafted')
+        self.message_user(request, f"{updated_count} post(s) have been drafted.", messages.SUCCESS)
+    draft_posts.short_description = "Mark selected posts as Drafted"
+
+    def admin_like_posts_bulk(self, request, queryset):
+        admin_user = request.user
+        liked_count = 0; already_liked_count = 0
+        for post_obj in queryset:
+            _, created = Like.objects.get_or_create(post=post_obj, user=admin_user)
+            if created: liked_count += 1
+            else: already_liked_count +=1
+        msg_parts = []
+        if liked_count: msg_parts.append(f"{liked_count} post(s) liked.")
+        if already_liked_count: msg_parts.append(f"{already_liked_count} post(s) already liked by you.")
+        if not msg_parts: msg_parts.append("No new likes were applied or no posts selected.")
+        self.message_user(request, " ".join(msg_parts), messages.SUCCESS if liked_count > 0 else messages.INFO)
+    admin_like_posts_bulk.short_description = "Like selected (as admin)"
+
+    def admin_unlike_posts_bulk(self, request, queryset):
+        admin_user = request.user
+        unliked_count = 0; not_liked_count = 0
+        for post_obj in queryset:
+            deleted_count, _ = Like.objects.filter(post=post_obj, user=admin_user).delete()
+            if deleted_count > 0: unliked_count +=1
+            else: not_liked_count += 1
+        msg_parts = []
+        if unliked_count: msg_parts.append(f"{unliked_count} post(s) unliked.")
+        if not_liked_count: msg_parts.append(f"{not_liked_count} post(s) were not liked by you.")
+        if not msg_parts: msg_parts.append("No unlikes were applied or no posts selected.")
+        self.message_user(request, " ".join(msg_parts), messages.SUCCESS if unliked_count > 0 else messages.INFO)
+    admin_unlike_posts_bulk.short_description = "Unlike selected (as admin)"
 
 
 @admin.register(Like)
 class LikeAdmin(BaseAdmin):
-    list_display = ('user', 'post')
-    search_fields = ('user__username',)
-    list_filter = ('user',)
-   
+    list_display = ('user', 'post_title', 'created_at')
+    search_fields = ('user__username', 'post__title')
+    list_filter = ('user', 'created_at', 'post__author')
+    readonly_fields = ('created_at', 'updated_at')
+    date_hierarchy = 'created_at'
+    autocomplete_fields = ['post', 'user']
+
+    def post_title(self, obj):
+        return obj.post.title
+    post_title.short_description = 'Post Title'
+    post_title.admin_order_field = 'post__title'
+
 
 @admin.register(TaggedItem)
 class TagAdmin(BaseAdmin):
-    list_display = ('tag',)
-    search_fields = ('tag',)
+    list_display = ('tag', 'content_object', 'object_id')
+    search_fields = ('tag__name',)
     list_filter = ('tag',)
-    
-    
+    autocomplete_fields = ['tag']
+
+
 @admin.register(Comment)
 class CommentAdmin(BaseAdmin):
-   list_display = ('post', 'user', 'content')
-   search_fields = ('content',)
-   list_filter = ('user', 'post')
-    
+   list_display = ('post_title', 'user_username', 'short_content', 'created_at', 'updated_at')
+   search_fields = ('content', 'user__username', 'post__title')
+   list_filter = ('user', 'post__author', 'created_at', 'post__status')
+   readonly_fields = ('created_at', 'updated_at')
+   date_hierarchy = 'created_at'
+   autocomplete_fields = ['post', 'user']
 
- 
+   fieldsets = (
+       (None, {
+           'fields': ('post', 'user', 'content')
+       }),
+       ('Timestamps', {
+           'fields': ('created_at', 'updated_at'),
+           'classes': ('collapse',)
+       }),
+   )
+
+   def post_title(self, obj):
+       return obj.post.title
+   post_title.short_description = 'Post'
+   post_title.admin_order_field = 'post__title'
+
+   def user_username(self, obj):
+       return obj.user.username
+   user_username.short_description = 'User'
+   user_username.admin_order_field = 'user__username'
+   
+   def short_content(self, obj):
+       return obj.content[:75] + '...' if len(obj.content) > 75 else obj.content
+   short_content.short_description = 'Content Snippet'
